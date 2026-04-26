@@ -5,7 +5,7 @@
 ## 📦 项目结构
 
 ```
-xianyu_backend/
+x_radar_backend/
 ├── app/
 │   ├── main.py           # FastAPI 服务入口
 │   ├── models.py         # SQLAlchemy ORM 模型
@@ -22,7 +22,7 @@ xianyu_backend/
 ### 1. 安装依赖
 
 ```bash
-cd D:\kaifa\xianyu\xianyu_backend
+cd D:\x_radar_backend
 pip install -r requirements.txt
 ```
 
@@ -42,7 +42,7 @@ python -m app.service.worker
 
 ### 4. 打开前端管理界面
 
-双击打开 `D:\kaifa\xianyu\xianyu_frontend\index.html`。
+前端地址：。
 
 ## 🔌 插件对接
 
