@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+platform.venv/
+.vscode/
+*.db
+*.db-shm
+*.db-wal
+app/ws_test.py
+xianyu_backend.egg-info/
+.env
