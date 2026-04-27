@@ -52,6 +52,8 @@ class XianyuLive:
         self._refresh_task = None
         self._pending_create: Optional[asyncio.Future] = None  # 等待 create_chat 响应
         self._last_heartbeat_response: float = 0  # 上次心跳响应时间
+        self._processed_mids: set = set()  # 消息去重集合
+        self._MID_MAX_SIZE = 5000  # 最多记住 5000 条 mid
 
     async def connect(self):
         """建立 WebSocket 连接并进入消息循环"""
@@ -262,6 +264,18 @@ class XianyuLive:
         if message.get("code") == 200 and "body" not in message:
             self._last_heartbeat_response = time.time()
             return
+
+        # 消息去重：用 mid 跳过已处理的消息
+        msg_mid = message.get("headers", {}).get("mid", "")
+        if msg_mid:
+            if msg_mid in self._processed_mids:
+                return  # 重复消息，跳过
+            self._processed_mids.add(msg_mid)
+            # 防止集合无限增长，超过上限时清空一半
+            if len(self._processed_mids) > self._MID_MAX_SIZE:
+                keep = list(self._processed_mids)[self._MID_MAX_SIZE // 2:]
+                self._processed_mids = set(keep)
+
         try:
             # 检查是否是 create_chat 的响应
             if self._pending_create and not self._pending_create.done():

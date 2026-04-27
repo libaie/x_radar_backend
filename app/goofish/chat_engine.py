@@ -4,7 +4,8 @@ AI 对话引擎 — 闲鱼私聊砍价状态机
 """
 import json
 import asyncio
-from typing import Optional
+import random
+from typing import Optional, Dict
 from datetime import datetime, timezone
 
 from loguru import logger
@@ -366,6 +367,15 @@ async def trigger_conversation(product_id: str, plugin_id: str, seller_id: str,
 
 
 # ==========================================
+# 消息防抖 — 同一卖家连发多条时只回复最后一条
+# ==========================================
+
+_debounce_tasks: Dict[str, asyncio.Task] = {}  # key=conversation_id → reply task
+
+DEBOUNCE_SECONDS = 1.5  # 等 1.5 秒再回复
+
+
+# ==========================================
 # 卖家消息处理器 — 由 WS 回调触发
 # ==========================================
 
@@ -374,9 +384,8 @@ async def handle_seller_message(plugin_id: str, seller_id: str, seller_name: str
     """
     收到卖家消息后的处理流程:
     1. 匹配对话 (by seller_id + item_id)
-    2. 存储消息
-    3. 推送到管理前端
-    4. 如果是 AI 模式 → 生成回复 → 发送
+    2. 存储消息 + 推送到管理前端 (立即)
+    3. 如果是 AI 模式 → 防抖后生成回复 → 发送
     """
     from .connection import connection_pool
     from .router import broadcast_to_admins  # 管理端 WS 推送
@@ -435,30 +444,47 @@ async def handle_seller_message(plugin_id: str, seller_id: str, seller_name: str
         }
     })
 
-    # 如果是 manual 模式，不自动回复
-    if conv_stage == "manual":
-        return
-
-    # 如果是 done，不回复
-    if conv_stage == "done":
+    # 如果是 manual 或 done，不自动回复
+    if conv_stage in ("manual", "done"):
         return
 
     # 推进阶段
-    new_stage = advance_stage(conv_id, content)
+    advance_stage(conv_id, content)
 
-    # 随机延迟 (3-8秒，模拟真人)
-    import random
-    delay = random.uniform(3, 8)
-    await asyncio.sleep(delay)
+    # 防抖：取消同一对话的上一次回复任务，延迟后再回复
+    async def _deferred_reply():
+        await asyncio.sleep(DEBOUNCE_SECONDS)
+        await asyncio.sleep(random.uniform(2, 5))  # 额外随机延迟模拟真人
 
-    # 生成 AI 回复
-    reply = await asyncio.to_thread(generate_ai_reply, conv_id)
-    if reply:
+        from .connection import connection_pool
+        from .router import broadcast_to_admins
+
+        reply = await asyncio.to_thread(generate_ai_reply, conv_id)
+        if not reply:
+            logger.warning(f"[chat_engine] ⚠️ 防抖后 AI 回复为空: conv={conv_id}")
+            return
+
         try:
-            await connection_pool.send_text(conv_plugin_id, effective_cid, seller_id, reply)
-            stored = store_message(conv_id, "ai", reply, new_stage)
+            # 重新读取最新 cid（防抖期间可能已更新）
+            db2 = database.SessionLocal()
+            try:
+                conv2 = db2.query(models.Conversation).filter(
+                    models.Conversation.id == conv_id
+                ).first()
+                final_cid = conv2.cid if conv2 else ""
+                final_stage = conv2.stage if conv2 else "opening"
+                final_plugin_id = conv2.plugin_id if conv2 else plugin_id
+                final_seller_id = conv2.seller_id if conv2 else seller_id
+            finally:
+                db2.close()
 
-            # 推送 AI 回复到管理前端
+            if not final_cid:
+                logger.error(f"[chat_engine] ❌ 防抖回复时 cid 为空: conv={conv_id}")
+                return
+
+            await connection_pool.send_text(final_plugin_id, final_cid, final_seller_id, reply)
+            stored = store_message(conv_id, "ai", reply, final_stage)
+
             await broadcast_to_admins({
                 "type": "new_message",
                 "conversation_id": conv_id,
@@ -466,9 +492,20 @@ async def handle_seller_message(plugin_id: str, seller_id: str, seller_name: str
                     "id": stored.id,
                     "sender": "ai",
                     "content": reply,
-                    "stage": new_stage,
+                    "stage": final_stage,
                     "created_at": stored.created_at.isoformat(),
                 }
             })
+            logger.info(f"[chat_engine] ✅ 防抖回复已发送: conv={conv_id}, reply={reply[:30]}")
         except Exception as e:
-            logger.error(f"[chat_engine] AI 回复发送失败: {e}")
+            logger.error(f"[chat_engine] ❌ 防抖回复发送失败: {e}")
+        finally:
+            _debounce_tasks.pop(conv_id, None)
+
+    # 取消上一次未执行的回复任务
+    old_task = _debounce_tasks.get(conv_id)
+    if old_task and not old_task.done():
+        old_task.cancel()
+        logger.debug(f"[chat_engine] 取消上一次防抖任务: conv={conv_id}")
+
+    _debounce_tasks[conv_id] = asyncio.create_task(_deferred_reply())
