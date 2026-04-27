@@ -1095,7 +1095,7 @@ def delete_task_group(group_id: str, request: Request, db: Session = Depends(get
 # 🚀 任务派发中心 (带 MySQL 持久化)
 # ==========================================
 @app.post("/api/tasks/publish")
-def publish_cloud_task(task_req: schemas.CloudTaskRequest, request: Request, db: Session = Depends(get_db)):
+async def publish_cloud_task(task_req: schemas.CloudTaskRequest, request: Request, db: Session = Depends(get_db)):
     user_id = get_current_user_id(request)
 
     # 🌟 1. 永久保存到数据库
@@ -1128,6 +1128,30 @@ def publish_cloud_task(task_req: schemas.CloudTaskRequest, request: Request, db:
     elif task_req.target_plugin_id:
         target_plugin_ids = [task_req.target_plugin_id]
 
+    # 🌟 自动激活待机中的节点（下发任务时无需手动点"启动"）
+    activated = 0
+    nodes_to_activate = []
+    for pid, status in manager.node_status.items():
+        if status == "standby" and manager.node_owner.get(pid) == user_id:
+            # 如果指定了节点组，只激活组内的节点
+            if target_plugin_ids and pid not in target_plugin_ids:
+                continue
+            # 检查节点是否已配置 AI 模型和邮箱
+            plugin = db.query(models.Plugin).filter(models.Plugin.id == pid).first()
+            if plugin and plugin.model_id and plugin.email_id:
+                nodes_to_activate.append(pid)
+
+    for pid in nodes_to_activate:
+        manager.node_status[pid] = "idle"
+        plugin = db.query(models.Plugin).filter(models.Plugin.id == pid).first()
+        if plugin:
+            plugin.status = "active"
+        await manager.send_task_to_worker(pid, {"type": "command", "action": "REMOTE_START"})
+        activated += 1
+    if activated:
+        db.commit()
+        print(f"⚡ [自动激活] 下发任务时自动唤醒了 {activated} 个待机节点")
+
     # 🌟 2. 塞入 Redis 接力池
     count = 0
     for idx, kw in enumerate(task_req.keywords):
@@ -1143,8 +1167,22 @@ def publish_cloud_task(task_req: schemas.CloudTaskRequest, request: Request, db:
         redis_client.rpush(manager.QUEUE_KEY, json.dumps(task_dict))
         count += 1
 
+    # 统计当前可用节点数
+    idle_count = sum(
+        1 for pid, s in manager.node_status.items()
+        if s == "idle" and pid in manager.worker_connections
+        and manager.node_owner.get(pid) == user_id
+    )
+
     manager.trigger_dispatch()
-    return {"status": "success", "msg": f"✅ 已成功下发 {count} 个任务！"}
+    msg = f"✅ 已成功下发 {count} 个任务"
+    if activated:
+        msg += f"，自动唤醒了 {activated} 个节点"
+    if idle_count == 0:
+        msg += f"。⚠️ 当前没有可用节点，请检查节点是否在线且已配置"
+    else:
+        msg += f"。当前有 {idle_count} 个空闲节点待命"
+    return {"status": "success", "msg": msg}
 
 @app.delete("/api/tasks/clear")
 async def clear_cloud_tasks(request: Request, db: Session = Depends(get_db)):

@@ -160,9 +160,7 @@ class ConnectionManager:
                 pass # 超时正常，说明这 5 秒内风平浪静
             self.wakeup_event.clear() # 清理唤醒标志，准备处理
 
-            # await asyncio.sleep(5) 
-            
-            # 1. 寻找空闲节点并按休息时间排序
+            # 1. 每轮重新计算空闲节点（避免使用过期状态）
             idle_nodes = [
                 pid for pid, status in self.node_status.items()
                 if status == "idle" and pid in self.worker_connections
@@ -177,10 +175,14 @@ class ConnectionManager:
 
             # 获取当前所有正在工作的任务名称，用于排队模式去重
             active_keywords = [t.get('keyword') for t in self.working_tasks.values()]
-            node_idx = 0
+            no_progress_count = 0  # 连续无进展计数，防止死循环
 
             # 🌟 核心：逐个任务进行分发判断
             for _ in range(q_len):
+                # 连续无进展次数超过队列长度，说明所有任务都无法派发，退出
+                if no_progress_count >= q_len:
+                    break
+
                 # 从左侧偷看一眼任务，但不弹出 (LINDEX)
                 task_json = redis_client.lindex(self.QUEUE_KEY, 0)
                 if not task_json: break
@@ -196,17 +198,18 @@ class ConnectionManager:
                     # 无归属的任务跳过（旧数据或异常数据）
                     redis_client.lpop(self.QUEUE_KEY)
                     redis_client.rpush(self.QUEUE_KEY, task_json)
+                    no_progress_count += 1
                     continue
 
                 # 🆕 指定节点模式：只发给目标节点
                 if target_plugin_id:
                     task_idle_nodes = [
-                        pid for pid in idle_nodes[node_idx:]
+                        pid for pid in idle_nodes
                         if pid == target_plugin_id and self.node_owner.get(pid) == task_user_id
                     ]
                 else:
                     task_idle_nodes = [
-                        pid for pid in idle_nodes[node_idx:]
+                        pid for pid in idle_nodes
                         if self.node_owner.get(pid) == task_user_id
                     ]
 
@@ -214,10 +217,11 @@ class ConnectionManager:
                     # 🆕 没有匹配的空闲节点，将任务移到队尾避免阻塞
                     redis_client.lpop(self.QUEUE_KEY)
                     redis_client.rpush(self.QUEUE_KEY, task_json)
+                    no_progress_count += 1
                     continue
 
                 node = task_idle_nodes[0]
-                dispatch_delays = task_data.get('dispatchDelays', [10, 25]) 
+                dispatch_delays = task_data.get('dispatchDelays', [10, 25])
                 if not isinstance(dispatch_delays, list) or len(dispatch_delays) != 2:
                     dispatch_delays = [5, 10]
 
@@ -238,13 +242,18 @@ class ConnectionManager:
                     actual_delay = max(0, dispatch_delay - elapsed)
                     self.task_start_time[node] = now + actual_delay
 
+                    print(f"📤 [派发] 任务 '{keyword}' → 节点 {node[:8]}... (延迟 {dispatch_delay}s)")
                     asyncio.create_task(self._delayed_send(node, dispatch_delay, task_data))
-                    node_idx += 1
+                    # 从空闲列表移除已分配的节点，避免重复分配
+                    if node in idle_nodes:
+                        idle_nodes.remove(node)
                     active_keywords.append(keyword)
+                    no_progress_count = 0  # 有进展，重置计数
                 else:
                     # 排队阻塞中，移到队尾给其他词让路
                     redis_client.lpop(self.QUEUE_KEY)
                     redis_client.rpush(self.QUEUE_KEY, task_json)
+                    no_progress_count += 1
 
 
     async def _delayed_send(self, node: str, delay: int, task_data: dict):
