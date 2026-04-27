@@ -318,33 +318,42 @@ async def trigger_conversation(product_id: str, plugin_id: str, seller_id: str,
 
     logger.info(f"[chat_engine] 新对话创建: id={conversation_id}, plugin={plugin_id[:8]}, 商品={item_title[:20]}")
 
-    # 先通过 create_chat 获取会话 ID (cid)
+    # 通过 create_chat 获取会话 ID (cid)，失败则等待重连后重试
     cid = ""
-    try:
-        logger.info(f"[chat_engine] 正在调用 create_chat: plugin={plugin_id[:8]}, seller={seller_id}, item={item_id}")
-        cid = await connection_pool.create_chat(plugin_id, seller_id, item_id)
-        logger.info(f"[chat_engine] create_chat 返回: cid='{cid}' (bool={bool(cid)})")
-        if cid:
-            # 将 cid 更新到对话记录
-            db2 = database.SessionLocal()
-            try:
-                conv2 = db2.query(models.Conversation).filter(
-                    models.Conversation.id == conversation_id
-                ).first()
-                if conv2:
-                    conv2.cid = cid
-                    db2.commit()
-            finally:
-                db2.close()
-            logger.info(f"[chat_engine] 会话 ID 已保存: cid={cid}")
-        else:
-            logger.warning(f"[chat_engine] ⚠️ create_chat 返回空 cid! plugin={plugin_id[:8]}, seller={seller_id}")
-    except Exception as e:
-        logger.error(f"[chat_engine] ❌ create_chat 异常: {type(e).__name__}: {e}")
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            logger.info(f"[chat_engine] 调用 create_chat (第{attempt}次): plugin={plugin_id[:8]}, seller={seller_id}")
+            cid = await connection_pool.create_chat(plugin_id, seller_id, item_id)
+            logger.info(f"[chat_engine] create_chat 返回: cid='{cid}' (bool={bool(cid)})")
+        except Exception as e:
+            logger.error(f"[chat_engine] ❌ create_chat 异常: {type(e).__name__}: {e}")
 
-    # create_chat 失败，无法发送消息，中止
-    if not cid:
-        logger.error(f"[chat_engine] ❌ 无有效 cid，跳过发送。请检查 cookie 是否过期 (plugin={plugin_id[:8]})")
+        if cid:
+            break
+
+        if attempt < max_retries:
+            wait_sec = 15 * attempt  # 15s, 30s
+            logger.warning(f"[chat_engine] ⚠️ create_chat 失败，等待 {wait_sec}s 后重连重试 (第{attempt}/{max_retries}次)")
+            await asyncio.sleep(wait_sec)
+            # 确保连接存活（触发重连）
+            await connection_pool.ensure_connection(plugin_id)
+
+    if cid:
+        # 将 cid 更新到对话记录
+        db2 = database.SessionLocal()
+        try:
+            conv2 = db2.query(models.Conversation).filter(
+                models.Conversation.id == conversation_id
+            ).first()
+            if conv2:
+                conv2.cid = cid
+                db2.commit()
+        finally:
+            db2.close()
+        logger.info(f"[chat_engine] 会话 ID 已保存: cid={cid}")
+    else:
+        logger.error(f"[chat_engine] ❌ {max_retries}次 create_chat 均失败，放弃发送 (plugin={plugin_id[:8]})")
         return conversation_id
 
     # 生成开场白
