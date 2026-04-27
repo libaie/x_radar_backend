@@ -2313,8 +2313,9 @@
                             negativeKeywords: task.params.negativeKeywords.length > 0 ? task.params.negativeKeywords: [],
                             minPrice: task.params.minPrice || null, maxPrice: task.params.maxPrice || null,
                             maxPages: task.params.maxPages, timeRange: task.params.timeRange, sortType: task.params.sortType,
-                            filters: task.params.filters, task_type: task.params.task_type, 
-                            dispatchDelays: task.params.dispatchDelays || []
+                            filters: task.params.filters, task_type: task.params.task_type,
+                            dispatchDelays: task.params.dispatchDelays || [],
+                            task_group_id: task.params.task_group_id || null
                         };
 
                         taskForm.value = { 
