@@ -300,10 +300,12 @@ def list_conversations(
     # 🆕 admin 加载 username（通过 plugin_id 关联 owner）
     user_map = {}
     plugin_owner_map = {}
+    plugin_name_map = {}
+    plugins = db.query(models.Plugin.id, models.Plugin.name, models.Plugin.user_id).all()
+    plugin_name_map = {p.id: p.name for p in plugins}
     if is_admin:
         users = db.query(models.User.id, models.User.username).all()
         user_map = {u.id: u.username for u in users}
-        plugins = db.query(models.Plugin.id, models.Plugin.user_id).all()
         plugin_owner_map = {p.id: p.user_id for p in plugins}
 
     return {
@@ -321,6 +323,7 @@ def list_conversations(
             "stage": c.stage,
             "result": c.result,
             "final_price": c.final_price,
+            "plugin_name": plugin_name_map.get(c.plugin_id, ""),
             "username": user_map.get(plugin_owner_map.get(c.plugin_id, ""), "-") if is_admin else None,
             "created_at": c.created_at.isoformat(),
             "updated_at": c.updated_at.isoformat(),
