@@ -321,6 +321,11 @@ async def trigger_conversation(product_id: str, plugin_id: str, seller_id: str,
     except Exception as e:
         logger.error(f"[chat_engine] ❌ create_chat 异常: {type(e).__name__}: {e}")
 
+    # create_chat 失败，无法发送消息，中止
+    if not cid:
+        logger.error(f"[chat_engine] ❌ 无有效 cid，跳过发送。请检查 cookie 是否过期 (plugin={plugin_id[:8]})")
+        return conversation_id
+
     # 生成开场白
     logger.info(f"[chat_engine] 正在生成 AI 开场白: conversation={conversation_id}")
     reply = generate_ai_reply(conversation_id)
