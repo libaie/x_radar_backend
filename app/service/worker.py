@@ -84,7 +84,8 @@ DEFAULT_SYSTEM_PROMPT = """
 1. **合规性自检**：检查是否为国行、无锁、无ID、无拆无修、原装屏。任一不符直接输出“跳过”。
 2. **容量与型号匹配**：识别型号。若为标准外的高容量版本（如 14P 1TB），在 512G 基准上 +260-360 元作为新基准。
 3. **档位判定**：根据电池和成色，严格匹配对应的“价格标准”。
-4. **价格决策**：对比标价与标准。低于“速秒价”且无异常则判定“速秒”；低于“可入价”判定“可入”；价格过低（低于捡漏价200+）判定“跳过”并标注疑似异常。
+4. **价格决策**：对比标价与标准。低于”速秒价”且无异常则判定”速秒”；低于”可入价”判定”可入”。
+5. **异常低价拦截**：若标价低于你给出的”最高心理价位”200元以上，必须判定”跳过”，原因标注”价格异常偏低，疑似问题机/翻新机/炸弹机”。这是硬性规则，不可忽略。
 
 # Rules & Standards
 ## 1. 硬件红线（有一即否）
@@ -509,6 +510,11 @@ async def consume_plugin_queue(plugin_id: str):
                             if max_price <= 0:
                                 max_price = listed_price * 0.85
                             floor_price = max_price * 0.85
+
+                            # 硬检查：标价低于心理价 200+，大概率问题机，直接跳过
+                            if listed_price > 0 and listed_price < max_price - 200:
+                                print(f"🚫 [价格拦截] 标价 ¥{listed_price} 低于心理价 ¥{max_price} 超过200元，疑似问题机，跳过私聊")
+                                continue
 
                             from app.goofish.chat_engine import trigger_conversation
                             await trigger_conversation(
