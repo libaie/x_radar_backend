@@ -193,6 +193,7 @@ class ConnectionManager:
                 task_user_id = task_data.get('user_id', '')
                 target_plugin_id = task_data.get('target_plugin_id', '')  # 🆕 指定节点
                 is_admin_task = task_data.get('admin_broadcast', False)  # 🌟 admin 广播
+                task_group_id = task_data.get('task_group_id', '')  # 串行批次标识
 
                 # 🆕 按 user_id 过滤可用节点
                 if not task_user_id and not is_admin_task:
@@ -238,7 +239,20 @@ class ConnectionManager:
 
                 # -------------------------------------------------------
                 # 🚦 逻辑判定：是否允许派发？
-                if task_type == 'concurrent' or keyword not in active_keywords:
+                if task_type == 'concurrent':
+                    can_dispatch = keyword not in active_keywords
+                else:
+                    # sequential: 同一 task_group_id 只允许一个关键词在跑
+                    active_group_ids = {
+                        t.get('task_group_id') for t in self.working_tasks.values()
+                        if t.get('task_group_id')
+                    }
+                    can_dispatch = (
+                        keyword not in active_keywords
+                        and (not task_group_id or task_group_id not in active_group_ids)
+                    )
+
+                if can_dispatch:
                     redis_client.lpop(self.QUEUE_KEY)
                     self.node_status[node] = "working"
                     self.working_tasks[node] = task_data

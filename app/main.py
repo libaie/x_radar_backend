@@ -1233,6 +1233,9 @@ async def publish_cloud_task(task_req: schemas.CloudTaskRequest, request: Reques
     # 🌟 2. 塞入 Redis 接力池
     is_admin = request.state.role == 'admin'
     count = 0
+    # 为同一批次的 sequential 任务生成 group_id，用于串行控制
+    import uuid
+    task_group_id = uuid.uuid4().hex[:12]
     for idx, kw in enumerate(task_req.keywords):
         task_dict = task_req.dict()
         del task_dict["keywords"]
@@ -1240,6 +1243,8 @@ async def publish_cloud_task(task_req: schemas.CloudTaskRequest, request: Reques
         task_dict["user_id"] = user_id
         if is_admin:
             task_dict["admin_broadcast"] = True  # admin 任务可被任意节点接收
+        if task_req.task_type == "sequential":
+            task_dict["task_group_id"] = task_group_id  # 串行批次标识
 
         # 🆕 如果指定了节点组，按轮询分配
         if target_plugin_ids:
