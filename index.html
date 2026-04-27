@@ -1635,6 +1635,7 @@
                                         </div>
                                         <div style="font-size: 12px; color: #999; margin-top: 2px;">
                                             ¥{{ c.item_price || '?' }} · {{ c.ai_decision || '' }}
+                                            <span v-if="c.max_price" style="color: #059669;"> → ¥{{ c.max_price }}</span>
                                             <span v-if="c.plugin_name" style="margin-left: 6px; color: #6366f1; font-size: 11px;">🏷️ {{ c.plugin_name }}</span>
                                         </div>
                                     </div>
@@ -1660,6 +1661,21 @@
                                                 {{ selectedConv.stage === 'manual' ? '🤖 AI接管' : '👤 手动接管' }}
                                             </el-button>
                                         </div>
+                                    </div>
+                                    <!-- AI 决策信息 -->
+                                    <div v-if="selectedConv.ai_decision || selectedConv.max_price" style="padding: 8px 16px; border-bottom: 1px solid #f0f0f0; background: #fefce8; font-size: 12px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap;">
+                                        <span v-if="selectedConv.ai_decision" style="font-weight: 600;">
+                                            🧠 AI决策: {{ selectedConv.ai_decision }}
+                                        </span>
+                                        <span v-if="selectedConv.max_price" style="color: #059669;">
+                                            心理价 ¥{{ selectedConv.max_price }}
+                                        </span>
+                                        <span v-if="selectedConv.floor_price" style="color: #dc2626;">
+                                            捡漏底线 ¥{{ selectedConv.floor_price }}
+                                        </span>
+                                        <span v-if="selectedConv.item_price" style="color: #6b7280;">
+                                            卖家标价 ¥{{ selectedConv.item_price }}
+                                        </span>
                                     </div>
                                     <!-- 消息列表 -->
                                     <div ref="chatMessagesRef" class="chat-messages-area" style="flex: 1; overflow-y: auto; padding: 16px; background: #fafafa;">
@@ -2808,6 +2824,10 @@
                     try {
                         const res = await axios.get(`${API_URL}/chat/conversations/${conv.id}`);
                         chatMessages.value = res.data.messages || [];
+                        // 用详情数据更新 selectedConv（含 floor_price 等完整字段）
+                        if (res.data.conversation) {
+                            Object.assign(selectedConv.value, res.data.conversation);
+                        }
                         // 滚动到底部
                         setTimeout(() => {
                             if (chatMessagesRef.value) chatMessagesRef.value.scrollTop = chatMessagesRef.value.scrollHeight;

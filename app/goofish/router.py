@@ -320,6 +320,7 @@ def list_conversations(
             "item_price": c.item_price,
             "ai_decision": c.ai_decision,
             "max_price": c.max_price,
+            "floor_price": c.floor_price,
             "stage": c.stage,
             "result": c.result,
             "final_price": c.final_price,
