@@ -1231,6 +1231,7 @@ async def publish_cloud_task(task_req: schemas.CloudTaskRequest, request: Reques
         print(f"⚡ [自动激活] 下发任务时自动唤醒了 {activated} 个待机节点")
 
     # 🌟 2. 塞入 Redis 接力池
+    is_admin = request.state.role == 'admin'
     count = 0
     for idx, kw in enumerate(task_req.keywords):
         task_dict = task_req.dict()
@@ -1250,7 +1251,6 @@ async def publish_cloud_task(task_req: schemas.CloudTaskRequest, request: Reques
     # 统计当前可用节点数 + 诊断信息
     idle_count = 0
     diagnostic = []
-    is_admin = request.state.role == 'admin'
     # admin 可见所有节点，普通用户只看自己的
     if is_admin:
         user_plugins = db.query(models.Plugin).all()
