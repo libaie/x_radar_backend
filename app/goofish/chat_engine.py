@@ -121,6 +121,25 @@ def build_prompt(conversation, chat_history: list, stage: str) -> str:
 
 
 # ==========================================
+# 安全过滤
+# ==========================================
+
+_BLOCKED_PHRASES = [
+    "微信", "wx", "weixin", "QQ", "qq号", "支付宝", "银行卡",
+    "线下交易", "站外", "私下", "加我", "加好友",
+]
+
+def _safe_filter(text: str) -> str:
+    """过滤站外引导词，防止违规导致封号"""
+    lower = text.lower()
+    for phrase in _BLOCKED_PHRASES:
+        if phrase.lower() in lower:
+            logger.warning(f"[chat_engine] 安全过滤: 检测到 '{phrase}'，替换为安全提示")
+            return "不好意思，我们还是在闲鱼上聊吧，方便有保障一些。"
+    return text
+
+
+# ==========================================
 # AI 对话引擎
 # ==========================================
 
@@ -192,6 +211,7 @@ def generate_ai_reply(conversation_id: str) -> Optional[str]:
         )
 
         reply = response.choices[0].message.content.strip()
+        reply = _safe_filter(reply)
         logger.info(f"[chat_engine] AI 回复 (stage={conv.stage}): {reply[:50]}")
         return reply
 

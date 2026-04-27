@@ -121,8 +121,16 @@ def _get_js_runtime():
 def decrypt_message(data: str) -> dict:
     """
     解密闲鱼 WebSocket 消息
-    base64 -> MessagePack (JS) -> JSON
+    策略: 先尝试 base64+JSON 直接解析，失败再走 JS MessagePack 解密
     """
+    # 尝试 1: Base64 → UTF-8 → JSON (部分消息无需 MessagePack)
+    try:
+        decoded = base64.b64decode(data).decode("utf-8")
+        return json.loads(decoded)
+    except Exception:
+        pass
+
+    # 尝试 2: JS MessagePack 解密 (依赖 Node.js)
     runtime = _get_js_runtime()
     if runtime is None:
         return {}

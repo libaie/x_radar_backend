@@ -51,6 +51,7 @@ class XianyuLive:
         self._heartbeat_task = None
         self._refresh_task = None
         self._pending_create: Optional[asyncio.Future] = None  # 等待 create_chat 响应
+        self._last_heartbeat_response: float = 0  # 上次心跳响应时间
 
     async def connect(self):
         """建立 WebSocket 连接并进入消息循环"""
@@ -257,6 +258,10 @@ class XianyuLive:
 
     async def _handle_message(self, message: dict):
         """处理收到的消息"""
+        # 心跳响应 (lwp: "/!" 的回复)
+        if message.get("code") == 200 and "body" not in message:
+            self._last_heartbeat_response = time.time()
+            return
         try:
             # 检查是否是 create_chat 的响应
             if self._pending_create and not self._pending_create.done():
@@ -373,7 +378,8 @@ class XianyuLive:
         }
 
     async def _heartbeat_loop(self):
-        """心跳保活 (每15秒)"""
+        """心跳保活 (每15秒) + 超时检测"""
+        self._last_heartbeat_response = time.time()
         while self._running and self.ws:
             try:
                 await self.ws.send(json.dumps({
@@ -381,15 +387,23 @@ class XianyuLive:
                     "headers": {"mid": generate_mid()}
                 }))
                 await asyncio.sleep(15)
+                # 检测心跳超时 (30秒无响应 → 连接已死)
+                if time.time() - self._last_heartbeat_response > 30:
+                    logger.warning("[goofish] 心跳超时，连接可能已断开，触发重连")
+                    break
             except Exception:
                 break
 
     async def _refresh_loop(self):
-        """定时刷新 token (每600秒)"""
+        """定时刷新 token (每600秒)，刷新后主动断开触发重连"""
         while self._running:
             await asyncio.sleep(600)
             try:
                 self.xianyu.refresh_token()
-                logger.info("[goofish] Token 已刷新")
+                logger.info("[goofish] Token 已刷新，主动断开 WS 以用新 token 重连")
+                # 主动关闭连接，触发 connect() 主循环重连
+                if self.ws:
+                    await self.ws.close()
+                break
             except Exception as e:
                 logger.warning(f"[goofish] Token 刷新失败: {e}")
