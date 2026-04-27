@@ -38,7 +38,7 @@ class XianYuConnectionPool:
     async def ensure_connection(self, plugin_id: str, on_message=None) -> Optional[XianyuLive]:
         """
         确保指定账号的 WS 连接存活
-        如果已连接则复用，否则新建
+        如果已连接则复用，否则新建并等待连接建立
         """
         # 已连接且活跃
         if plugin_id in self._connections and self._connections[plugin_id].ws:
@@ -68,7 +68,17 @@ class XianYuConnectionPool:
         task = asyncio.create_task(self._run_connection(plugin_id, live))
         self._tasks[plugin_id] = task
 
-        logger.info(f"[pool] 已启动 WS 连接: plugin_id={plugin_id}")
+        # 等待 WS 连接建立 (最多 10 秒)
+        for _ in range(20):
+            if live.ws:
+                break
+            await asyncio.sleep(0.5)
+
+        if not live.ws:
+            logger.warning(f"[pool] WS 连接建立超时: plugin_id={plugin_id}")
+            # 连接仍在后台重试中，不清理
+
+        logger.info(f"[pool] 已启动 WS 连接: plugin_id={plugin_id}, connected={bool(live.ws)}")
         return live
 
     async def _run_connection(self, plugin_id: str, live: XianyuLive):

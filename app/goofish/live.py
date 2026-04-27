@@ -50,6 +50,7 @@ class XianyuLive:
         self._running = False
         self._heartbeat_task = None
         self._refresh_task = None
+        self._pending_create: Optional[asyncio.Future] = None  # 等待 create_chat 响应
 
     async def connect(self):
         """建立 WebSocket 连接并进入消息循环"""
@@ -97,6 +98,9 @@ class XianyuLive:
             self._heartbeat_task.cancel()
         if self._refresh_task:
             self._refresh_task.cancel()
+        # 清理 pending create
+        if self._pending_create and not self._pending_create.done():
+            self._pending_create.set_result(None)
         if self.ws:
             try:
                 await self.ws.close()
@@ -116,12 +120,14 @@ class XianyuLive:
         logger.info(f"[goofish] 消息已发送 → {to_id}: {text[:50]}")
 
     async def create_chat(self, to_id: str, item_id: str) -> str:
-        """创建与卖家的会话，返回会话 ID"""
+        """创建与卖家的会话，返回会话 ID (cid)"""
         if not self.ws:
             raise RuntimeError("WebSocket 未连接")
+
+        mid = generate_mid()
         msg = {
             "lwp": "/r/SingleChatConversation/create",
-            "headers": {"mid": generate_mid()},
+            "headers": {"mid": mid},
             "body": [{
                 "pairFirst": f"{to_id}@goofish",
                 "pairSecond": f"{self.user_id}@goofish",
@@ -130,9 +136,29 @@ class XianyuLive:
                 "ctx": {"appVersion": "1.0", "platform": "web"}
             }]
         }
-        await self.ws.send(json.dumps(msg))
-        # TODO: 等待响应获取 cid，目前需要从消息中获取
-        return ""
+
+        # 设置 Future 等待服务器响应
+        loop = asyncio.get_running_loop()
+        self._pending_create = loop.create_future()
+        self._pending_create_mid = mid
+
+        try:
+            await self.ws.send(json.dumps(msg))
+            logger.info(f"[goofish] 已发送创建会话请求: to={to_id}, item={item_id}")
+
+            # 等待服务器响应，超时 10 秒
+            cid = await asyncio.wait_for(self._pending_create, timeout=10.0)
+            logger.info(f"[goofish] 获取到会话 ID: cid={cid}")
+            return cid or ""
+        except asyncio.TimeoutError:
+            logger.warning(f"[goofish] 创建会话超时: to={to_id}, item={item_id}")
+            return ""
+        except Exception as e:
+            logger.error(f"[goofish] 创建会话失败: {e}")
+            return ""
+        finally:
+            self._pending_create = None
+            self._pending_create_mid = None
 
     async def _init(self, ws):
         """注册 + 同步"""
@@ -194,6 +220,50 @@ class XianyuLive:
     async def _handle_message(self, message: dict):
         """处理收到的消息"""
         try:
+            # 检查是否是 create_chat 的响应
+            if self._pending_create and not self._pending_create.done():
+                headers = message.get("headers", {})
+                body = message.get("body", {})
+                mid = headers.get("mid", "")
+                code = message.get("code")
+
+                # 只匹配与 create_chat 请求 mid 相同的响应
+                is_create_response = (mid == getattr(self, '_pending_create_mid', ''))
+
+                # 也匹配没有 mid 但包含 cid 的响应（兜底）
+                cid = ""
+                if is_create_response or (not mid and body):
+                    # 从不同路径提取 cid
+                    if isinstance(body, list):
+                        for item in body:
+                            if isinstance(item, dict):
+                                cid = item.get("cid", "") or item.get("conversationId", "")
+                                if cid:
+                                    break
+                    elif isinstance(body, dict):
+                        cid = body.get("cid", "") or body.get("conversationId", "")
+                    # 从 headers 提取
+                    if not cid:
+                        cid = headers.get("cid", "")
+                    # 从嵌套结构提取
+                    if not cid and isinstance(body, dict):
+                        data = body.get("data", {})
+                        if isinstance(data, dict):
+                            cid = data.get("cid", "") or data.get("conversationId", "")
+
+                if cid:
+                    # 清理 cid (去掉 @goofish 后缀)
+                    if "@" in cid:
+                        cid = cid.split("@")[0]
+                    self._pending_create.set_result(cid)
+                    return
+
+                # 检查是否是错误响应
+                if is_create_response and code and code != 200:
+                    logger.warning(f"[goofish] create_chat 返回错误: code={code}, body={body}")
+                    self._pending_create.set_result(None)
+                    return
+
             body = message.get("body", {})
             sync_data = body.get("syncPushPackage", {}).get("data", [])
             if not sync_data:

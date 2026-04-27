@@ -297,11 +297,33 @@ async def trigger_conversation(product_id: str, plugin_id: str, seller_id: str,
 
     logger.info(f"[chat_engine] 新对话创建: id={conversation_id}, 商品={item_title[:20]}")
 
+    # 先通过 create_chat 获取会话 ID (cid)
+    cid = ""
+    try:
+        cid = await connection_pool.create_chat(plugin_id, seller_id, item_id)
+        if cid:
+            # 将 cid 更新到对话记录
+            db2 = database.SessionLocal()
+            try:
+                conv2 = db2.query(models.Conversation).filter(
+                    models.Conversation.id == conversation_id
+                ).first()
+                if conv2:
+                    conv2.cid = cid
+                    db2.commit()
+            finally:
+                db2.close()
+            logger.info(f"[chat_engine] 会话 ID 已获取: cid={cid}")
+        else:
+            logger.warning(f"[chat_engine] create_chat 未返回 cid，将尝试直接发送 (seller={seller_id})")
+    except Exception as e:
+        logger.warning(f"[chat_engine] create_chat 失败: {e}，将尝试直接发送")
+
     # 生成开场白并发送
     reply = generate_ai_reply(conversation_id)
     if reply:
         try:
-            await connection_pool.send_text(plugin_id, "", seller_id, reply)
+            await connection_pool.send_text(plugin_id, cid, seller_id, reply)
             store_message(conversation_id, "ai", reply, "opening")
         except Exception as e:
             logger.error(f"[chat_engine] 开场白发送失败: {e}")
@@ -343,6 +365,9 @@ async def handle_seller_message(plugin_id: str, seller_id: str, seller_name: str
         if cid and not conv.cid:
             conv.cid = cid
             db.commit()
+
+        # 优先使用数据库中已存的 cid（来自 create_chat）
+        effective_cid = conv.cid or cid
 
         # 存储卖家消息
         msg = models.ChatMessage(
@@ -396,7 +421,7 @@ async def handle_seller_message(plugin_id: str, seller_id: str, seller_name: str
     reply = await asyncio.to_thread(generate_ai_reply, conv_id)
     if reply:
         try:
-            await connection_pool.send_text(conv_plugin_id, cid, seller_id, reply)
+            await connection_pool.send_text(conv_plugin_id, effective_cid, seller_id, reply)
             stored = store_message(conv_id, "ai", reply, new_stage)
 
             # 推送 AI 回复到管理前端
