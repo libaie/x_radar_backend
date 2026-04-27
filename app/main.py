@@ -1092,6 +1092,73 @@ def delete_task_group(group_id: str, request: Request, db: Session = Depends(get
     return {"status": "deleted"}
 
 # ==========================================
+# 🔍 节点诊断 (排查任务派发问题)
+# ==========================================
+@app.get("/api/tasks/diagnose")
+def diagnose_nodes(request: Request, db: Session = Depends(get_db)):
+    """诊断当前用户节点状态，排查为什么任务派发不出去"""
+    user_id = get_current_user_id(request)
+    is_admin = request.state.role == 'admin'
+
+    # 1. 数据库中的节点
+    query = db.query(models.Plugin)
+    if not is_admin:
+        query = query.filter(models.Plugin.user_id == user_id)
+    db_plugins = query.all()
+
+    # 2. WebSocket 连接状态
+    ws_connected = set(manager.worker_connections.keys())
+    all_status = dict(manager.node_status)
+    all_owner = dict(manager.node_owner)
+
+    results = []
+    for p in db_plugins:
+        is_ws_connected = p.id in ws_connected
+        ws_status = all_status.get(p.id, "未连接")
+        owner_match = all_owner.get(p.id) == user_id
+        has_model = bool(p.model_id)
+        has_email = bool(p.email_id)
+
+        issue = None
+        if not is_ws_connected:
+            issue = "WebSocket 未连接 — Chrome 插件是否打开？后端地址是否正确？"
+        elif not owner_match:
+            issue = "节点归属不匹配"
+        elif ws_status == "standby":
+            issue = "节点待机中 — 需要点击启动或下发任务时会自动唤醒"
+        elif ws_status == "working":
+            issue = "节点正在执行任务"
+        elif not has_model:
+            issue = "未绑定 AI 模型"
+        elif not has_email:
+            issue = "未绑定邮箱"
+        elif ws_status == "idle":
+            issue = None  # 正常
+
+        results.append({
+            "id": p.id[:8] + "...",
+            "full_id": p.id,
+            "name": p.name,
+            "db_status": p.status,
+            "ws_connected": is_ws_connected,
+            "ws_status": ws_status,
+            "has_model": has_model,
+            "has_email": has_email,
+            "ready": is_ws_connected and ws_status == "idle" and has_model and has_email,
+            "issue": issue,
+        })
+
+    ready_count = sum(1 for r in results if r["ready"])
+    return {
+        "user_id": user_id,
+        "total_nodes": len(results),
+        "ready_nodes": ready_count,
+        "ws_total_connected": len(ws_connected),
+        "nodes": results,
+    }
+
+
+# ==========================================
 # 🚀 任务派发中心 (带 MySQL 持久化)
 # ==========================================
 @app.post("/api/tasks/publish")
@@ -1167,22 +1234,38 @@ async def publish_cloud_task(task_req: schemas.CloudTaskRequest, request: Reques
         redis_client.rpush(manager.QUEUE_KEY, json.dumps(task_dict))
         count += 1
 
-    # 统计当前可用节点数
-    idle_count = sum(
-        1 for pid, s in manager.node_status.items()
-        if s == "idle" and pid in manager.worker_connections
-        and manager.node_owner.get(pid) == user_id
-    )
+    # 统计当前可用节点数 + 诊断信息
+    idle_count = 0
+    diagnostic = []
+    user_plugins = db.query(models.Plugin).filter(models.Plugin.user_id == user_id).all()
+    for p in user_plugins:
+        is_ws = p.id in manager.worker_connections
+        ws_st = manager.node_status.get(p.id, "未连接")
+        if is_ws and ws_st == "idle":
+            idle_count += 1
+        elif not is_ws:
+            diagnostic.append(f"节点 [{p.name}] WebSocket 未连接")
+        elif ws_st == "standby":
+            diagnostic.append(f"节点 [{p.name}] 待机中(已尝试自动唤醒)")
+        elif ws_st == "working":
+            diagnostic.append(f"节点 [{p.name}] 正在执行任务")
+        else:
+            diagnostic.append(f"节点 [{p.name}] 状态={ws_st}")
+
+    if not user_plugins:
+        diagnostic.append("没有绑定任何节点，请先在 Chrome 插件中注册节点")
 
     manager.trigger_dispatch()
     msg = f"✅ 已成功下发 {count} 个任务"
     if activated:
         msg += f"，自动唤醒了 {activated} 个节点"
     if idle_count == 0:
-        msg += f"。⚠️ 当前没有可用节点，请检查节点是否在线且已配置"
+        msg += f"。⚠️ 当前没有空闲节点"
+        if diagnostic:
+            msg += f"：{'；'.join(diagnostic[:3])}"
     else:
         msg += f"。当前有 {idle_count} 个空闲节点待命"
-    return {"status": "success", "msg": msg}
+    return {"status": "success", "msg": msg, "idle_count": idle_count, "diagnostic": diagnostic}
 
 @app.delete("/api/tasks/clear")
 async def clear_cloud_tasks(request: Request, db: Session = Depends(get_db)):
