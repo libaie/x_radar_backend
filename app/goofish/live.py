@@ -119,8 +119,8 @@ class XianyuLive:
         await self.ws.send(json.dumps(msg))
         logger.info(f"[goofish] 消息已发送 → {to_id}: {text[:50]}")
 
-    async def create_chat(self, to_id: str, item_id: str) -> str:
-        """创建与卖家的会话，返回会话 ID (cid)"""
+    async def create_chat(self, to_id: str, item_id: str, _retry: bool = True) -> str:
+        """创建与卖家的会话，返回会话 ID (cid)。400 时自动重连重试一次。"""
         if not self.ws:
             raise RuntimeError("WebSocket 未连接")
 
@@ -148,6 +148,13 @@ class XianyuLive:
 
             # 等待服务器响应，超时 10 秒
             cid = await asyncio.wait_for(self._pending_create, timeout=10.0)
+
+            # 400 导致 cid 为 None → 尝试重新注册后重试一次
+            if not cid and _retry:
+                logger.warning("[goofish] create_chat 失败，尝试重新注册 LWP 会话后重试...")
+                if await self._re_register():
+                    return await self.create_chat(to_id, item_id, _retry=False)
+
             logger.info(f"[goofish] 获取到会话 ID: cid={cid}")
             return cid or ""
         except asyncio.TimeoutError:
@@ -159,6 +166,37 @@ class XianyuLive:
         finally:
             self._pending_create = None
             self._pending_create_mid = None
+
+    async def _re_register(self):
+        """重新注册 LWP 会话（用新 accessToken），用于 400 后恢复"""
+        if not self.ws:
+            return False
+        access_token = self.xianyu.get_access_token()
+        if not access_token:
+            logger.error("[goofish] _re_register: 获取 accessToken 失败")
+            return False
+        reg_msg = {
+            "lwp": "/reg",
+            "headers": {
+                "cache-header": "app-key token ua wv",
+                "app-key": "444e9908a51d1cb236a27862abc769c9",
+                "token": access_token,
+                "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 DingTalk(2.1.5) OS(Windows/10) Browser(Chrome/133.0.0.0) DingWeb/2.1.5 IMPaaS DingWeb/2.1.5",
+                "dt": "j",
+                "wv": "im:3,au:3,sy:6",
+                "sync": "0,0;0;0;",
+                "did": self.device_id,
+                "mid": generate_mid()
+            }
+        }
+        try:
+            await self.ws.send(json.dumps(reg_msg))
+            logger.info("[goofish] LWP 会话已重新注册 (accessToken 已刷新)")
+            await asyncio.sleep(1)  # 等待服务器处理
+            return True
+        except Exception as e:
+            logger.error(f"[goofish] _re_register 失败: {e}")
+            return False
 
     async def _init(self, ws):
         """注册 + 同步"""
