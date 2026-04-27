@@ -144,7 +144,7 @@ class Conversation(Base):
     seller_id = Column(String(255), nullable=False)
     seller_name = Column(String(255), nullable=True)
     item_id = Column(String(255), nullable=True)
-    item_title = Column(String(255), nullable=True)
+    item_title = Column(Text, nullable=True)
     item_price = Column(Float, nullable=True)
     ai_decision = Column(String(255), nullable=True)
     max_price = Column(Float, nullable=True)
