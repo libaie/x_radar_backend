@@ -85,7 +85,7 @@ DEFAULT_SYSTEM_PROMPT = """
 2. **容量与型号匹配**：识别型号。若为标准外的高容量版本（如 14P 1TB），在 512G 基准上 +260-360 元作为新基准。
 3. **档位判定**：根据电池和成色，严格匹配对应的“价格标准”。
 4. **价格决策**：对比标价与标准。低于”速秒价”且无异常则判定”速秒”；低于”可入价”判定”可入”。
-5. **异常低价拦截**：若标价低于你给出的”最高心理价位”200元以上，必须判定”跳过”，原因标注”价格异常偏低，疑似问题机/翻新机/炸弹机”。这是硬性规则，不可忽略。
+5. **异常低价拦截**：若标价明显低于市场合理范围（低于你给出的”最高心理价位”的85%），必须判定”跳过”，原因标注”价格异常偏低，疑似问题机/翻新机/炸弹机”。这是硬性规则，不可忽略。
 
 # Rules & Standards
 ## 1. 硬件红线（有一即否）
@@ -511,9 +511,9 @@ async def consume_plugin_queue(plugin_id: str):
                                 max_price = listed_price * 0.85
                             floor_price = max_price * 0.85
 
-                            # 硬检查：标价低于心理价 200+，大概率问题机，直接跳过
-                            if listed_price > 0 and listed_price < max_price - 200:
-                                print(f"🚫 [价格拦截] 标价 ¥{listed_price} 低于心理价 ¥{max_price} 超过200元，疑似问题机，跳过私聊")
+                            # 硬检查：标价低于捡漏底线（floor_price），大概率问题机，直接跳过
+                            if listed_price > 0 and listed_price < floor_price:
+                                print(f"🚫 [价格拦截] 标价 ¥{listed_price} 低于捡漏底线 ¥{floor_price}，疑似问题机，跳过私聊")
                                 continue
 
                             from app.goofish.chat_engine import trigger_conversation
