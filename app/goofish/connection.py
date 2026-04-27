@@ -8,6 +8,7 @@ from typing import Dict, Optional
 from loguru import logger
 
 from .live import XianyuLive
+from .utils import parse_cookies, get_user_id
 from ..crypto import decrypt_value
 from .. import models, database
 
@@ -56,6 +57,13 @@ class XianYuConnectionPool:
             return None
 
         cookie_str = decrypt_value(record.cookie_enc)
+
+        # 校验 cookie 解密是否成功 (Fernet 密文以 gAAAAAB 开头)
+        if not cookie_str or cookie_str.startswith("gAAAAAB"):
+            logger.error(f"[pool] ❌ Cookie 解密失败! plugin_id={plugin_id[:8]}。请检查 ENCRYPTION_KEY 是否与加密时一致，并重新同步 Cookie")
+            return None
+
+        logger.info(f"[pool] Cookie 解密成功: plugin_id={plugin_id[:8]}, len={len(cookie_str)}, user_id={get_user_id(parse_cookies(cookie_str))}")
 
         # 创建连接实例，绑定消息回调
         async def on_msg(**kwargs):
