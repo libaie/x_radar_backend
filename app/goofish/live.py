@@ -165,37 +165,6 @@ class XianyuLive:
             self._pending_create = None
             self._pending_create_mid = None
 
-    async def _re_register(self):
-        """重新注册 LWP 会话（用新 accessToken），用于 400 后恢复"""
-        if not self.ws:
-            return False
-        access_token = self.xianyu.get_access_token()
-        if not access_token:
-            logger.error("[goofish] _re_register: 获取 accessToken 失败")
-            return False
-        reg_msg = {
-            "lwp": "/reg",
-            "headers": {
-                "cache-header": "app-key token ua wv",
-                "app-key": "444e9908a51d1cb236a27862abc769c9",
-                "token": access_token,
-                "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 DingTalk(2.1.5) OS(Windows/10) Browser(Chrome/133.0.0.0) DingWeb/2.1.5 IMPaaS DingWeb/2.1.5",
-                "dt": "j",
-                "wv": "im:3,au:3,sy:6",
-                "sync": "0,0;0;0;",
-                "did": self.device_id,
-                "mid": generate_mid()
-            }
-        }
-        try:
-            await self.ws.send(json.dumps(reg_msg))
-            logger.info("[goofish] LWP 会话已重新注册 (accessToken 已刷新)")
-            await asyncio.sleep(1)  # 等待服务器处理
-            return True
-        except Exception as e:
-            logger.error(f"[goofish] _re_register 失败: {e}")
-            return False
-
     async def _init(self, ws):
         """注册 + 同步"""
         access_token = self.xianyu.get_access_token()
@@ -313,14 +282,9 @@ class XianyuLive:
                 # 检查是否是错误响应
                 if is_create_response and code and code != 200:
                     logger.warning(f"[goofish] create_chat 返回错误: code={code}, body={body}")
+                    # 只通知等待方，不关闭 WS（这是对话级错误，不是连接级错误）
+                    # 其他对话不受影响，连接池的心跳/刷新循环会处理连接级问题
                     self._pending_create.set_result(None)
-                    # 500/400 通常意味着 token 过期，关闭 WS 让 connect() finally 清理并触发重连
-                    if code in (400, 500) and self.ws:
-                        logger.info("[goofish] create_chat 错误，关闭 WS 触发重连")
-                        try:
-                            await self.ws.close()
-                        except Exception:
-                            pass
                     return
 
             body = message.get("body", {})

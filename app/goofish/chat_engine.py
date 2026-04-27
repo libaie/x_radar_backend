@@ -318,7 +318,7 @@ async def trigger_conversation(product_id: str, plugin_id: str, seller_id: str,
 
     logger.info(f"[chat_engine] 新对话创建: id={conversation_id}, plugin={plugin_id[:8]}, 商品={item_title[:20]}")
 
-    # 通过 create_chat 获取会话 ID (cid)，失败则等待重连后重试
+    # 通过 create_chat 获取会话 ID (cid)，失败重试（WS 不受影响）
     cid = ""
     max_retries = 3
     for attempt in range(1, max_retries + 1):
@@ -333,14 +333,11 @@ async def trigger_conversation(product_id: str, plugin_id: str, seller_id: str,
             break
 
         if attempt < max_retries:
-            wait_sec = 15 * attempt  # 15s, 30s
-            logger.warning(f"[chat_engine] ⚠️ create_chat 失败，等待 {wait_sec}s 后重连重试 (第{attempt}/{max_retries}次)")
+            wait_sec = 5 * attempt  # 5s, 10s（WS 未断开，短等待即可）
+            logger.warning(f"[chat_engine] ⚠️ create_chat 失败，{wait_sec}s 后重试 (第{attempt}/{max_retries}次)")
             await asyncio.sleep(wait_sec)
-            # 确保连接存活（触发重连）
-            await connection_pool.ensure_connection(plugin_id)
 
     if cid:
-        # 将 cid 更新到对话记录
         db2 = database.SessionLocal()
         try:
             conv2 = db2.query(models.Conversation).filter(
