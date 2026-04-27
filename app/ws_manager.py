@@ -192,9 +192,10 @@ class ConnectionManager:
                 keyword = task_data.get('keyword')
                 task_user_id = task_data.get('user_id', '')
                 target_plugin_id = task_data.get('target_plugin_id', '')  # 🆕 指定节点
+                is_admin_task = task_data.get('admin_broadcast', False)  # 🌟 admin 广播
 
                 # 🆕 按 user_id 过滤可用节点
-                if not task_user_id:
+                if not task_user_id and not is_admin_task:
                     # 无归属的任务跳过（旧数据或异常数据）
                     redis_client.lpop(self.QUEUE_KEY)
                     redis_client.rpush(self.QUEUE_KEY, task_json)
@@ -205,13 +206,19 @@ class ConnectionManager:
                 if target_plugin_id:
                     task_idle_nodes = [
                         pid for pid in idle_nodes
-                        if pid == target_plugin_id and self.node_owner.get(pid) == task_user_id
+                        if pid == target_plugin_id and (
+                            is_admin_task or self.node_owner.get(pid) == task_user_id
+                        )
                     ]
                 else:
-                    task_idle_nodes = [
-                        pid for pid in idle_nodes
-                        if self.node_owner.get(pid) == task_user_id
-                    ]
+                    if is_admin_task:
+                        # 🌟 admin 任务可发给任意空闲节点
+                        task_idle_nodes = list(idle_nodes)
+                    else:
+                        task_idle_nodes = [
+                            pid for pid in idle_nodes
+                            if self.node_owner.get(pid) == task_user_id
+                        ]
 
                 if not task_idle_nodes:
                     # 🆕 没有匹配的空闲节点，将任务移到队尾避免阻塞

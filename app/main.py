@@ -1098,34 +1098,32 @@ def delete_task_group(group_id: str, request: Request, db: Session = Depends(get
 def diagnose_nodes(request: Request, db: Session = Depends(get_db)):
     """诊断当前用户节点状态，排查为什么任务派发不出去"""
     user_id = get_current_user_id(request)
-    is_admin = request.state.role == 'admin'
+    role = request.state.role
+    is_admin = role == 'admin'
 
-    # 1. 数据库中的节点
-    query = db.query(models.Plugin)
-    if not is_admin:
-        query = query.filter(models.Plugin.user_id == user_id)
-    db_plugins = query.all()
+    # 1. 当前用户的节点 (与 publish 相同的查询)
+    my_plugins = db.query(models.Plugin).filter(models.Plugin.user_id == user_id).all()
 
-    # 2. WebSocket 连接状态
+    # 2. 数据库中所有节点 (用于对比)
+    all_plugins = db.query(models.Plugin).all()
+
+    # 3. WebSocket 连接状态
     ws_connected = set(manager.worker_connections.keys())
     all_status = dict(manager.node_status)
     all_owner = dict(manager.node_owner)
 
     results = []
-    for p in db_plugins:
+    for p in my_plugins:
         is_ws_connected = p.id in ws_connected
         ws_status = all_status.get(p.id, "未连接")
-        owner_match = all_owner.get(p.id) == user_id
         has_model = bool(p.model_id)
         has_email = bool(p.email_id)
 
         issue = None
         if not is_ws_connected:
             issue = "WebSocket 未连接 — Chrome 插件是否打开？后端地址是否正确？"
-        elif not owner_match:
-            issue = "节点归属不匹配"
         elif ws_status == "standby":
-            issue = "节点待机中 — 需要点击启动或下发任务时会自动唤醒"
+            issue = "节点待机中 — 下发任务时会自动唤醒"
         elif ws_status == "working":
             issue = "节点正在执行任务"
         elif not has_model:
@@ -1133,7 +1131,7 @@ def diagnose_nodes(request: Request, db: Session = Depends(get_db)):
         elif not has_email:
             issue = "未绑定邮箱"
         elif ws_status == "idle":
-            issue = None  # 正常
+            issue = None
 
         results.append({
             "id": p.id[:8] + "...",
@@ -1148,13 +1146,26 @@ def diagnose_nodes(request: Request, db: Session = Depends(get_db)):
             "issue": issue,
         })
 
+    # 4. 所有节点的归属分布 (帮助发现 user_id 不匹配的问题)
+    owner_distribution = {}
+    for p in all_plugins:
+        oid = p.user_id or "(无归属)"
+        if oid not in owner_distribution:
+            owner_distribution[oid] = []
+        owner_distribution[oid].append(f"{p.name}({p.id[:8]})")
+
     ready_count = sum(1 for r in results if r["ready"])
     return {
-        "user_id": user_id,
-        "total_nodes": len(results),
+        "current_user_id": user_id,
+        "current_role": role,
+        "my_nodes_count": len(my_plugins),
+        "total_db_nodes": len(all_plugins),
         "ready_nodes": ready_count,
         "ws_total_connected": len(ws_connected),
-        "nodes": results,
+        "my_nodes": results,
+        "all_nodes_by_owner": owner_distribution,
+        "ws_node_status": {pid[:8]: st for pid, st in all_status.items()},
+        "ws_node_owner": {pid[:8]: oid for pid, oid in all_owner.items()},
     }
 
 
@@ -1226,6 +1237,8 @@ async def publish_cloud_task(task_req: schemas.CloudTaskRequest, request: Reques
         del task_dict["keywords"]
         task_dict["keyword"] = kw
         task_dict["user_id"] = user_id
+        if is_admin:
+            task_dict["admin_broadcast"] = True  # admin 任务可被任意节点接收
 
         # 🆕 如果指定了节点组，按轮询分配
         if target_plugin_ids:
@@ -1237,7 +1250,12 @@ async def publish_cloud_task(task_req: schemas.CloudTaskRequest, request: Reques
     # 统计当前可用节点数 + 诊断信息
     idle_count = 0
     diagnostic = []
-    user_plugins = db.query(models.Plugin).filter(models.Plugin.user_id == user_id).all()
+    is_admin = request.state.role == 'admin'
+    # admin 可见所有节点，普通用户只看自己的
+    if is_admin:
+        user_plugins = db.query(models.Plugin).all()
+    else:
+        user_plugins = db.query(models.Plugin).filter(models.Plugin.user_id == user_id).all()
     for p in user_plugins:
         is_ws = p.id in manager.worker_connections
         ws_st = manager.node_status.get(p.id, "未连接")
