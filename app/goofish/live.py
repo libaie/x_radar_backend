@@ -122,8 +122,8 @@ class XianyuLive:
         await self.ws.send(json.dumps(msg))
         logger.info(f"[goofish] 消息已发送 → {to_id}: {text[:50]}")
 
-    async def create_chat(self, to_id: str, item_id: str, _retry: bool = True) -> str:
-        """创建与卖家的会话，返回会话 ID (cid)。400 时自动重连重试一次。"""
+    async def create_chat(self, to_id: str, item_id: str) -> str:
+        """创建与卖家的会话，返回会话 ID (cid)。失败返回空字符串。"""
         if not self.ws:
             raise RuntimeError("WebSocket 未连接")
 
@@ -152,13 +152,8 @@ class XianyuLive:
             # 等待服务器响应，超时 10 秒
             cid = await asyncio.wait_for(self._pending_create, timeout=10.0)
 
-            # 400 导致 cid 为 None → 尝试重新注册后重试一次
-            if not cid and _retry:
-                logger.warning("[goofish] create_chat 失败，尝试重新注册 LWP 会话后重试...")
-                if await self._re_register():
-                    return await self.create_chat(to_id, item_id, _retry=False)
-
-            logger.info(f"[goofish] 获取到会话 ID: cid={cid}")
+            if cid:
+                logger.info(f"[goofish] 获取到会话 ID: cid={cid}")
             return cid or ""
         except asyncio.TimeoutError:
             logger.warning(f"[goofish] 创建会话超时: to={to_id}, item={item_id}")
@@ -319,6 +314,13 @@ class XianyuLive:
                 if is_create_response and code and code != 200:
                     logger.warning(f"[goofish] create_chat 返回错误: code={code}, body={body}")
                     self._pending_create.set_result(None)
+                    # 500/400 通常意味着 token 过期，关闭 WS 让 connect() finally 清理并触发重连
+                    if code in (400, 500) and self.ws:
+                        logger.info("[goofish] create_chat 错误，关闭 WS 触发重连")
+                        try:
+                            await self.ws.close()
+                        except Exception:
+                            pass
                     return
 
             body = message.get("body", {})
