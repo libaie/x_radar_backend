@@ -52,7 +52,7 @@ class XianYuConnectionPool:
             ).first()
 
         if not record:
-            logger.warning(f"[pool] 未找到 plugin_id={plugin_id} 的 cookie")
+            logger.warning(f"[pool] ❌ 未找到 plugin_id={plugin_id[:8]} 的 cookie! Chrome 插件需要先同步 Cookie")
             return None
 
         cookie_str = decrypt_value(record.cookie_enc)
@@ -113,9 +113,12 @@ class XianYuConnectionPool:
         """通过指定账号创建会话"""
         live = self._connections.get(plugin_id)
         if not live or not live.ws:
+            logger.info(f"[pool] create_chat: plugin={plugin_id[:8]} 无现成连接，尝试 ensure_connection")
             live = await self.ensure_connection(plugin_id)
         if live and live.ws:
+            logger.info(f"[pool] create_chat: plugin={plugin_id[:8]} WS 已连接，开始创建会话")
             return await live.create_chat(to_id, item_id)
+        logger.error(f"[pool] ❌ create_chat: plugin={plugin_id[:8]} WS 连接不可用 (live={bool(live)}, ws={bool(live.ws) if live else 'N/A'})")
         raise RuntimeError(f"plugin_id={plugin_id} 的 WS 连接不可用")
 
     async def close(self, plugin_id: str):

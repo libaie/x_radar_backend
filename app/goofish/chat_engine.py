@@ -295,12 +295,14 @@ async def trigger_conversation(product_id: str, plugin_id: str, seller_id: str,
     finally:
         db.close()
 
-    logger.info(f"[chat_engine] 新对话创建: id={conversation_id}, 商品={item_title[:20]}")
+    logger.info(f"[chat_engine] 新对话创建: id={conversation_id}, plugin={plugin_id[:8]}, 商品={item_title[:20]}")
 
     # 先通过 create_chat 获取会话 ID (cid)
     cid = ""
     try:
+        logger.info(f"[chat_engine] 正在调用 create_chat: plugin={plugin_id[:8]}, seller={seller_id}, item={item_id}")
         cid = await connection_pool.create_chat(plugin_id, seller_id, item_id)
+        logger.info(f"[chat_engine] create_chat 返回: cid='{cid}' (bool={bool(cid)})")
         if cid:
             # 将 cid 更新到对话记录
             db2 = database.SessionLocal()
@@ -313,20 +315,27 @@ async def trigger_conversation(product_id: str, plugin_id: str, seller_id: str,
                     db2.commit()
             finally:
                 db2.close()
-            logger.info(f"[chat_engine] 会话 ID 已获取: cid={cid}")
+            logger.info(f"[chat_engine] 会话 ID 已保存: cid={cid}")
         else:
-            logger.warning(f"[chat_engine] create_chat 未返回 cid，将尝试直接发送 (seller={seller_id})")
+            logger.warning(f"[chat_engine] ⚠️ create_chat 返回空 cid! plugin={plugin_id[:8]}, seller={seller_id}")
     except Exception as e:
-        logger.warning(f"[chat_engine] create_chat 失败: {e}，将尝试直接发送")
+        logger.error(f"[chat_engine] ❌ create_chat 异常: {type(e).__name__}: {e}")
 
-    # 生成开场白并发送
+    # 生成开场白
+    logger.info(f"[chat_engine] 正在生成 AI 开场白: conversation={conversation_id}")
     reply = generate_ai_reply(conversation_id)
+    logger.info(f"[chat_engine] AI 回复: {'有内容' if reply else 'None/空'} len={len(reply) if reply else 0}")
+
     if reply:
         try:
+            logger.info(f"[chat_engine] 正在发送消息: cid='{cid}', seller={seller_id}")
             await connection_pool.send_text(plugin_id, cid, seller_id, reply)
             store_message(conversation_id, "ai", reply, "opening")
+            logger.info(f"[chat_engine] ✅ 开场白发送成功: {reply[:30]}")
         except Exception as e:
-            logger.error(f"[chat_engine] 开场白发送失败: {e}")
+            logger.error(f"[chat_engine] ❌ 开场白发送失败: {type(e).__name__}: {e}")
+    else:
+        logger.warning(f"[chat_engine] ⚠️ AI 回复为空，未发送消息。检查 chat_model 配置和 API Key")
 
     return conversation_id
 
