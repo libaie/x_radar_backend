@@ -117,7 +117,11 @@ class XianyuApis:
         """获取 WS accessToken，失败返回空字符串"""
         try:
             result = self.get_token()
-            return result.get("data", {}).get("accessToken", "")
+            token = result.get("data", {}).get("accessToken", "")
+            if not token:
+                ret_codes = result.get("ret", [])
+                logger.warning(f"[goofish] get_token 未返回 accessToken: ret={ret_codes}, data_keys={list(result.get('data', {}).keys())}")
+            return token
         except Exception as e:
-            logger.error(f"[goofish] 获取 token 失败: {e}")
+            logger.error(f"[goofish] 获取 token 异常: {type(e).__name__}: {e}")
             return ""
