@@ -262,7 +262,12 @@ class XianyuLive:
                                 if cid:
                                     break
                     elif isinstance(body, dict):
-                        cid = body.get("cid", "") or body.get("conversationId", "")
+                        # 参考项目确认的路径: body.singleChatConversation.cid
+                        scc = body.get("singleChatConversation", {})
+                        if isinstance(scc, dict):
+                            cid = scc.get("cid", "")
+                        if not cid:
+                            cid = body.get("cid", "") or body.get("conversationId", "")
                     # 从 headers 提取
                     if not cid:
                         cid = headers.get("cid", "")
